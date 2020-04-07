@@ -1,17 +1,18 @@
 
-from DatasetPrep import movie1mprep
-from utils_attack import split_users
+from DatasetPrep import DatasetPrep
+from DatasetPrep import split_users, rate_to_matrix
 from utils_attack import attack_gen
 from utils_attack import plot_roc, plot_gt
 from utils_attack import generate_mix_attack
 from utils_attack import statistic_attack
 from sequential_attack_detector import sequential_attack_detector
+import matplotlib.pyplot as plt
 
 test_cond = {
         "attack_type"           : "mix_push",
         "attack_size"           : 0.05,
         "filler_size"           : 0.04,
-        "popularity"            : 1.0,
+        "popularity"            : 0.2,
         
         "expno"                 : 1,
         
@@ -31,12 +32,13 @@ test_cond = {
         }
             
 
-FeatureUser, FeatureItem, ratedata, InfoData = movie1mprep(ImpFeed = 0)
+dataset_inp = DatasetPrep()
+dataset_inp.movie1mload()
+dataset_inp.dataset_stat()
 
 
-# Print 
-TestSize = int(InfoData.I * test_cond['Test_ratio'] )
-TrainSize = InfoData.I - TestSize
+TestSize = int(dataset_inp.I * test_cond['Test_ratio'] )
+TrainSize = dataset_inp.I - TestSize
 ValSize = int(TrainSize * test_cond['Val_ratio'])
 TrainSize = TrainSize - ValSize
 
@@ -45,33 +47,28 @@ HoldSize = TestSize - TestSubSize
 
 MixSize = int(TestSubSize * test_cond['Mix_ratio'])
 GeniuneSize = TestSubSize - MixSize
-AttackSize = int(InfoData.I * test_cond['attack_size'])
+AttackSize = int(dataset_inp.I * test_cond['attack_size'])
 
+
+# Print test conditions
 print('Train-Test-Val Split:')
 print('Training Users: {}, Validation Users: {}, Test Users: {}'.format(TrainSize, ValSize, TestSize))
 print('Sequential Attack:')
 print('Geniune: {}, Mix: {}, Attack: {}'.format(GeniuneSize, MixSize, AttackSize))
 
 
+
+
 # Train-Test split
-ratedata_train, FeatureUserTrain, ratedata_test, FeatureUserTest = split_users(ratedata = ratedata,
-                                                                               I = InfoData.I,
-                                                                               J = InfoData.J,
-                                                                               FeatureUser = FeatureUser,
-                                                                               SplitSize = TestSize,
-                                                                               random = 1,
-                                                                               offset = 0)
+dataset_train, dataset_test = split_users(dataset_inp,
+                                          SplitSize = TestSize,
+                                          random = 1,
+                                          offset = 0)
         
-
-InfoData.I = InfoData.I - TestSize
-
-
 # Compute baseline statistics from training data
-detector = sequential_attack_detector(InfoData)
+detector = sequential_attack_detector(dataset_train)
 
-detector.compute_baseline(FeatureUserTrain,
-                          FeatureItem,
-                          ratedata_train,
+detector.compute_baseline(dataset_train,
                           ValSize,
                           test_cond["target_itemno"],
                           K = 40, lmd_u = 10, lmd_v = 1,
@@ -79,45 +76,34 @@ detector.compute_baseline(FeatureUserTrain,
 
 
 # Generate mixed sequential atttack
-ratedata_attack, FeatureUserAttack = attack_gen(InfoData,
-                                                FeatureUserTrain,
-                                                ratedata_train,
-                                                target_itemno = test_cond["target_itemno"],
-                                                user_start_id = 1,
-                                                no_of_newratings =  max(8, int(InfoData.J * test_cond['filler_size'])),
-                                                attack_size = AttackSize,
-                                                attack_type = 1,
-                                                pop_frac = test_cond['popularity'],
-                                                rand_rating = 1,
-                                                prob = test_cond['rating_prob_push'])
+dataset_attack = attack_gen(dataset_train,
+                            target_itemno = test_cond["target_itemno"],
+                            user_start_id = 1,
+                            no_of_newratings =  max(8, int(dataset_train.J * test_cond['filler_size'])),
+                            attack_size = AttackSize,
+                            attack_type = test_cond["attack_type"],
+                            pop_frac = test_cond['popularity'],
+                            rand_rating = 1,
+                            prob = test_cond['rating_prob_push'])
 
-_, _, ratedata_test_sub, FeatureUserTestSub = split_users(ratedata = ratedata_test,
-                                                          I = TestSize,
-                                                          J = InfoData.J,
-                                                          FeatureUser = FeatureUserTest,
-                                                          SplitSize = TestSubSize,
-                                                          random = 1,
-                                                          offset = 0)
+_, dataset_test_sub = split_users( dataset_test,
+                                      SplitSize = TestSubSize,
+                                      random = 1,
+                                      offset = 0)
         
-Rseq, Oseq, ground_truth_vec, FeatureUserSeq = generate_mix_attack(ratedata_attack,
-                                                          ratedata_test_sub,
-                                                          FeatureUserAttack,
-                                                          FeatureUserTestSub,
-                                                          InfoData.J, 
-                                                          TestSubSize,
-                                                          AttackSize,
-                                                          MixSize)
+dataset_seq, ground_truth_vec = generate_mix_attack(dataset_attack,
+                                                    dataset_test_sub,
+                                                    MixSize)
 
-statistic_attack(ratedata_train = ratedata_train,
-                 Rseq = Rseq,
-                 Oseq = Oseq,
+
+statistic_attack(dataset_train,
+                 dataset_seq,
                  GeniuneSize = GeniuneSize,
                  MixSize = MixSize,
                  target_itemno = test_cond["target_itemno"])
 
 # Test the sequence 
-detector.compute_test_score(FeatureUserSeq,
-                            Rseq, Oseq,
+detector.compute_test_score(dataset_seq,
                             test_cond["target_itemno"])
 
 

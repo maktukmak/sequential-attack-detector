@@ -8,15 +8,14 @@ from DatasetPrep import rate_to_matrix
 
 class MF_MSI(object):
     
-    def __init__(self, infodata, K = 10, lmd_u = 1, lmd_v = 1):
+    def __init__(self, dataset, K = 10, lmd_u = 1, lmd_v = 1):
         
-        self.infodata = infodata
         self.ImpFeed_a = 0
         self.ImpFeed_b = 1
         self.logeval = 0
         
-        self.modelparams_u = self.model_params(infodata.Du, infodata.Mu, K, lmd_u, infodata.I)
-        self.modelparams_v = self.model_params(infodata.Di, infodata.Mi, K, lmd_v, infodata.J)
+        self.modelparams_u = self.model_params(dataset.Du, dataset.Mu, K, lmd_u, dataset.I)
+        self.modelparams_v = self.model_params(dataset.Di, dataset.Mi, K, lmd_v, dataset.J)
         self.latentparams_u = self.latent_params(self.modelparams_u)
         self.latentparams_v = self.latent_params(self.modelparams_v)
     
@@ -34,6 +33,14 @@ class MF_MSI(object):
             self.muR = np.zeros(I)
             self.Sigma_x = np.identity(D)
             self.Prec_x = np.identity(D)
+            
+            self.mean_r = 0
+            self.std_r = 0
+            self.mean_user_feature = 0
+            self.std_user_feature = 0
+            self.mean_item_feature = 0
+            self.std_item_feature = 0
+            
             
             # Fixed model priors
             self.U_mean_prior = np.random.normal(0, 1, K)
@@ -259,16 +266,29 @@ class MF_MSI(object):
     
         return LogLik, LogRating
             
-    def fit(self, FeatureUser, FeatureItem, ratedata_train, ratedata_test, ratedata_val, epochno = 10):
+    def fit(self, dataset_train, dataset_val, dataset_test, epochno = 10):
         
-        Rtrain, Otrain = rate_to_matrix(ratedata_train, self.infodata.I, self.infodata.J)
-        Rtest, Otest = rate_to_matrix(ratedata_test, self.infodata.I, self.infodata.J)
-        Rval, Oval = rate_to_matrix(ratedata_val, self.infodata.I, self.infodata.J)
+        self.mean_r = dataset_train.ratedata[:,2].mean()
+        self.std_r = dataset_train.ratedata[:,2].std()
+        ratedata_norm = dataset_train.ratedata.copy()
+        ratedata_norm[:,2] = (ratedata_norm[:,2] - self.mean_r)/ self.std_r
         
-        X = FeatureUser[0:self.infodata.Du, :]
-        Y = FeatureUser[self.infodata.Du:, :]
-        Z = FeatureItem[0:self.infodata.Di, :]
-        P = FeatureItem[self.infodata.Di:, :]
+        
+        Rtrain, Otrain = rate_to_matrix(ratedata_norm, dataset_train.I, dataset_train.J)
+        Rtest, Otest = rate_to_matrix(ratedata_norm, dataset_val.I, dataset_val.J)
+        Rval, Oval = rate_to_matrix(ratedata_norm, dataset_test.I, dataset_test.J)
+        
+        X = dataset_train.FeatureUser[0:dataset_train.Du, :]
+        Y = dataset_train.FeatureUser[dataset_train.Du:, :]
+        Z = dataset_train.FeatureItem[0:dataset_train.Di, :]
+        P = dataset_train.FeatureItem[dataset_train.Di:, :]
+        
+        self.mean_user_feature = X.mean(axis = 1)
+        self.std_user_feature = X.std(axis = 1)
+        self.mean_item_feature = Z.mean(axis = 1)
+        self.std_item_feature = Z.std(axis = 1)
+        X = (X - self.mean_user_feature) / self.std_user_feature
+        Z = (Z - self.mean_item_feature) / self.std_item_feature
         
         for epoch in range(0,epochno):
             
@@ -304,16 +324,24 @@ class MF_MSI(object):
                 LogLik = LogLik_u + LogLik_v + LogRating
 
             if self.logeval == 1:
-                model_eval_res = eval_res(self, ratedata_train, ratedata_test, ratedata_val, 10)
+                model_eval_res = eval_res(self, ratedata_norm, dataset_test.ratedata, dataset_val.ratedata, 10)
                 #print("LH = {:.2f}, LH residual = {:.2f},  MSETr = {:.3f}, Recall = {:.3f}, AUC = {:.3f}, MSETe = {:.3f}, MSEVal = {:.3f}".format(LogLik, LogLik - tmp_log,  model_eval_res.Train_MSE, model_eval_res.Test_recall,model_eval_res.Test_auc, model_eval_res.Test_MSE, model_eval_res.Val_MSE))
                 print("MSETr = {:.3f}, MSEVal = {:.3f}, MSETe = {:.3f}, Recall = {:.3f}, AUC = {:.3f},".format(model_eval_res.Train_MSE, model_eval_res.Val_MSE, model_eval_res.Test_MSE, model_eval_res.Test_recall,model_eval_res.Test_auc))
                 #print("Rating Err = {:.3f}, Side Cont Err= {:.3f}, Side Disc Err= {:.3f}, MSEVal= {:.3f}, MSETest= {:.3f}".format( model_eval_res.Train_MSE, mseX, crossY, model_eval_res.Val_MSE, model_eval_res.Test_MSE))
                 #print("LH = {:.2f}, LH residual = {:.2f},  MSE = {:.3f}, Recall = {:.3f}, AUC = {:.3f}, ILD = {:.3f}".format(LogLik, LogLik - tmp_log,  model_eval_res.Train_MSE, model_eval_res.Train_recall, model_eval_res.Test_auc, model_eval_res.Test_recall))
             
-    def infer_user_posterior(self, FeatureUser, R, O):
+    def infer_user_posterior(self, dataset):
         
-        X = FeatureUser[0:self.infodata.Du, :]
-        Y = FeatureUser[self.infodata.Du:, :]
+        ratedata_norm = dataset.ratedata.copy()
+        ratedata_norm[:,2] = (ratedata_norm[:,2] - self.mean_r)/ self.std_r
+        
+        R, O = rate_to_matrix(ratedata_norm, dataset.I, dataset.J)
+        
+        X = dataset.FeatureUser[0:dataset.Du, :]
+        X = (X - self.mean_user_feature) / self.std_user_feature
+        Y = dataset.FeatureUser[dataset.Du:, :]
+        
+        
         self.modelparams_u.I = R.shape[0]
         
         latentparams_new = self.latent_params(self.modelparams_u)
@@ -328,4 +356,25 @@ class MF_MSI(object):
         cov = latentparams_new.Sigma_u
         
         return mean, cov
+    
+    def loglik_analytic(self, dataset):
+        
+        mean_new_user, sigma_new_user = self.infer_user_posterior(dataset)
+        
+        ratedata_norm = dataset.ratedata.copy()
+        ratedata_norm[:,2] = (ratedata_norm[:,2] - self.mean_r) / self.std_r
+        R, O = rate_to_matrix(ratedata_norm, dataset.I, dataset.J)
+    
+        mean_item = self.latentparams_v.U_mean
+        sigma_item = self.latentparams_v.Sigma_u
+        
+        sec_mom = (np.einsum('ijj->ij', sigma_new_user) + (mean_new_user.T)**2) @ (np.einsum('ijj->ij', sigma_item) + (mean_item.T)**2).T
+        Sigma = sec_mom - ((mean_new_user.T)**2) @ (mean_item**2)
+        
+        nloglik_user = Sigma + (mean_new_user.T @ mean_item)**2 - 2*(mean_new_user.T @ mean_item)*R + R**2
+        nloglik_user[np.where(O == 0)] = 0
+        
+        MSE = np.mean(((mean_new_user.T @ mean_item) - R)[np.where(O == 1)]**2)
+                
+        return nloglik_user, MSE
         
